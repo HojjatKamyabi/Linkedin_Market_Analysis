@@ -1,0 +1,53 @@
+FROM apache/airflow
+
+USER root
+
+# Install necessary tools
+RUN apt-get update && apt-get install -y \
+    wget \
+    unzip \
+    gnupg \
+    curl \
+    jq \
+    && apt-get clean
+
+# Install Chrome
+RUN wget -q -O - https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor > /usr/share/keyrings/google-chrome.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update \
+    && apt-get install -y google-chrome-stable
+
+# Install ChromeDriver 
+RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1) \
+    && LATEST_DRIVER_URL=$(curl -s "https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json" | jq -r ".channels.Stable.downloads.chromedriver[] | select(.platform==\"linux64\") | .url") \
+    && echo "Downloading ChromeDriver from: $LATEST_DRIVER_URL" \
+    && wget -q --no-verbose -O /tmp/chromedriver-linux64.zip "$LATEST_DRIVER_URL" \
+    && unzip /tmp/chromedriver-linux64.zip -d /tmp/ \
+    && mv /tmp/chromedriver-linux64/chromedriver /usr/bin/chromedriver \
+    && rm -rf /tmp/chromedriver-linux64.zip /tmp/chromedriver-linux64 \
+    && chmod +x /usr/bin/chromedriver
+
+
+
+ENV PATH="/usr/local/bin:$PATH"
+
+# dependencies for scraper
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    docker.io \
+    build-essential \
+    wget \
+    # Add any other system dependencies your scraper needs
+    postgresql-client \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies
+COPY /scraper/requirements.txt ./scraper/requirements.txt
+RUN pip install --no-cache-dir -r ./scraper/requirements.txt
+
+
+COPY ./scraper /opt/airflow/scraper
+WORKDIR /opt/airflow/scraper
+
+USER airflow
