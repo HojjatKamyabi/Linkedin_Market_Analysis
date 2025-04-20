@@ -1,26 +1,29 @@
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime, timedelta
-import pandas as pd
 from keybert import KeyBERT
 import json
+import psycopg2
+
 
 default_args = {
-    'owner': 'airflow',
+    'owner': 'hojjat',
     'depends_on_past': False,
-    'start_date': datetime(2025, 4, 16),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
+    'retries': 2,
     'retry_delay': timedelta(minutes=5),
 }
 
 def extract_skills():
-    # Connect to PostgreSQL
-    pg_hook = PostgresHook(postgres_conn_id="linkedin_postgres_conn")
-    conn = pg_hook.get_conn()
     
+    conn = psycopg2.connect(
+            host='host.docker.internal',
+            database='Linkedin_data',
+            user='postgres',
+            password='95059505',
+            port='5432'
+        )
+    cursor = conn.cursor()
+
     # get the last 50 jobs that don't have skills
     query = """
     SELECT id, description 
@@ -28,26 +31,21 @@ def extract_skills():
     WHERE skills IS NULL AND description IS NOT NULL
     LIMIT 50; 
     """
-    
-    df = pd.read_sql(query, conn)
-    
-    if df.empty:
-        print("No job descriptions to process")
-        return
-    
+    cursor.execute(query)
+    data = cursor.fetchall()
     
     kw_model = KeyBERT()
     
     # Extract skills for each job description
-    for index, row in df.iterrows():
-        job_id = row['id']
-        description = row['description']
+    for row in data:
+        job_id = row[0]
+        description = row[1]
         
         # Extract skills using KeyBERT
         # We're targeting keywords that are likely to be skills
         keywords = kw_model.extract_keywords(
             description, 
-            keyphrase_ngram_range=(1, 2),  # Allow for 1-2 word phrases
+            keyphrase_ngram_range=(1, 1),  # Allow for 1 word phrases
             stop_words='english',  # Remove English stop words
             use_maxsum=True,
             nr_candidates=20,
@@ -66,22 +64,21 @@ def extract_skills():
         SET skills = %s
         WHERE id = %s;
         """
-        
-        with conn.cursor() as cur:
-            cur.execute(update_query, (skills_json, job_id))
+        cursor.execute(update_query, (skills_json, job_id))
         
         conn.commit()
         print(f"Processed job ID {job_id}, extracted skills: {skills}")
     
     conn.close()
-    print(f"Processed {len(df)} job descriptions")
+    print(f"Processed {len(data)} job descriptions")
 
 # Define the DAG
 dag = DAG(
     'linkedin_skills_extraction',
     default_args=default_args,
     description='Extract skills from LinkedIn job descriptions using KeyBERT',
-    schedule_interval=timedelta(days=1),
+    schedule_interval=None,
+    start_date=datetime(2025, 4, 14),
     catchup=False,
 )
 
