@@ -17,9 +17,9 @@ def extract_skills():
     
     conn = psycopg2.connect(
             host='host.docker.internal',
-            database='Linkedin_data',
-            user='postgres',
-            password='95059505',
+            database='##your DB name##',
+            user='##Your username##',
+            password='##yourpassword##',
             port='5432'
         )
     cursor = conn.cursor()
