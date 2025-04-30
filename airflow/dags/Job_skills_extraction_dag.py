@@ -155,7 +155,7 @@ dag = DAG(
     'linkedin_skills_extraction',
     default_args=default_args,
     description='Extract skills from LinkedIn job descriptions using fuzzy logic',
-    schedule_interval=None,
+    schedule_interval=@weekly,
     start_date=datetime(2025, 4, 14),
     catchup=False,
 )
