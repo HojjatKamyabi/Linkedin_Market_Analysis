@@ -7,14 +7,14 @@ from datetime import datetime
 import re
 import psycopg2
 
-
+# Connect to the database
 def connect_to_db():
     try:
         conn = psycopg2.connect(
             host='host.docker.internal',
-            database='Linkedin_data',
-            user='postgres',
-            password='##password##',
+            database='## YOUR DATABASE NAME##',
+            user='## YOUR USERNAME##',
+            password='## YOUR PASSWORD##',
             port='5432'
         )
         return conn
@@ -24,9 +24,9 @@ def connect_to_db():
         return None 
 
 
-                
+# Create tables if they don't exist
 def create_tables(conn):
-    #Create tables if they don't exist
+    
     cursor = conn.cursor()
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS jobs (
@@ -46,6 +46,7 @@ def create_tables(conn):
     print("Database tables created/verified")
 
 
+# Scrape LinkedIn
 def scrape_linkedin(job_title, location, conn):
 
     options = Options()
@@ -166,7 +167,7 @@ def main():
     
     # Lists
     locations = ["Germany"]
-    job_titles = ["data analyst", "data engineer"]
+    job_titles = ["data analyst"]
     saved_files = []
     
     for job_title in job_titles:
