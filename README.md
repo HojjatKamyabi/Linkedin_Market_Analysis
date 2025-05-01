@@ -33,7 +33,7 @@ It is fully containerized with Docker, managed with Airflow, and written in Pyth
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/Linkedin_Market_Analysis.git
+git clone https://github.com/HojjatKamyabi/Linkedin_Market_Analysis.git
 cd Linkedin_Market_Analysis
 
 # Spin up containers
