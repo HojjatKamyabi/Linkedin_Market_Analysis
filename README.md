@@ -1,5 +1,5 @@
 ![alt text](https://github.com/HojjatKamyabi/Linkedin_Market_Analysis/blob/main/visualization/Dashboard_PowerBI.jpg?raw=true)
-# LinkedIn Job Scraper & Skill Extractor (Docker + Airflow + PostgreSQL + Python + Power BI)
+# LinkedIn Job Scraper & Skill Extractor
 
 A data pipeline project that:
 - Scrapes job postings from LinkedIn
