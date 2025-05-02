@@ -49,4 +49,5 @@ docker compose up --build
 
 
 
+## Check out full project description on my [personal website!](https://hojjatkamyabi.github.io/job_scraper.html)
 
