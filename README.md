@@ -33,6 +33,7 @@ To run this project successfully, make sure you have the following:
 - pandas
 - SQLAlchemy
 - airflow
+  
 (All dependencies in `requirements.txt`)
 
 ### System Requirements
