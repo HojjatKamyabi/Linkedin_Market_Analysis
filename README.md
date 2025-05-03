@@ -4,10 +4,10 @@
 
 A data pipeline project that:
 - Scrapes job postings from LinkedIn
-- Extracts skills using LLaMA
+- Extracts skills
 - Stores data in PostgreSQL
 - Orchestrated via Apache Airflow
-- Visualized in a dashboard (optional)
+- Visualized in a dashboard
 
 This project automatically scrapes LinkedIn job postings (for roles like Data Analyst and Data Engineer), extracts job descriptions, identifies required skills using AI, stores the data in a PostgreSQL database, and visualizes key insights using Power BI.  
 It is fully containerized with Docker, managed with Airflow, and written in Python.
@@ -33,7 +33,7 @@ To run this project successfully, make sure you have the following:
 - pandas
 - SQLAlchemy
 - airflow
-- other dependencies in `requirements.txt`
+(All dependencies in `requirements.txt`)
 
 ### System Requirements
 - Ability to run Docker containers
