@@ -9,7 +9,7 @@ A data pipeline project that:
 - Orchestrated via Apache Airflow
 - Visualized in a dashboard
 
-This project automatically scrapes LinkedIn job postings (for roles like Data Analyst and Data Engineer), extracts job descriptions, identifies required skills using AI, stores the data in a PostgreSQL database, and visualizes key insights using Power BI.  
+This project automatically scrapes LinkedIn job postings (for roles like Data Analyst and Data Engineer), extracts job descriptions, identifies required skills, stores the data in a PostgreSQL database, and visualizes key insights using Power BI.  
 It is fully containerized with Docker, managed with Airflow, and written in Python.
 
 ---
