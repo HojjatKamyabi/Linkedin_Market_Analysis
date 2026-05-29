@@ -3,45 +3,26 @@ services:
   postgres:
     image: postgres:15
     container_name: postgres
+    env_file:
+      - .env
     environment:
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - scraper_network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5
-    
-  # scraper service
-  scraper:
-    build: ./scraper
-    container_name: scraper
-    depends_on:
-      - postgres
-    environment:
-      - DB_HOST=postgres
-      - DB_NAME=jobdata
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_PORT=5432
-    networks:
-      - scraper_network
 
-
-
-  # Airflow services
   airflow_webserver:
-    build:
-      context: .
-      dockerfile: Dockerfile.airflow
-    image: custom-airflow:latest
+    image: apache/airflow:2.7.3-python3.10
     container_name: airflow-webserver
     restart: always
     depends_on:
@@ -49,26 +30,24 @@ services:
         condition: service_healthy
       airflow_scheduler:
         condition: service_started
+    env_file:
+      - .env
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
       - AIRFLOW__CORE__FERNET_KEY=${FERNET_KEY:-9nZunqm9OqSCq5uG4xGvTeeYJL9XBVuG_pKjbp-zwmM=}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
-      - DB_HOST=postgres
-      - DB_NAME=jobdata
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_PORT=5432
+      - _PIP_ADDITIONAL_REQUIREMENTS=beautifulsoup4 psycopg2-binary rapidfuzz python-dotenv
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
-      - ./scraper:/opt/airflow/scraper
+      - ./src/linkedin_market_analysis/scraper:/opt/airflow/scraper
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
       - "8880:8080"
-    command: api-server
+    command: webserver
     healthcheck:
       test: ["CMD-SHELL", "[ -f /opt/airflow/airflow-webserver.pid ]"]
       interval: 30s
@@ -79,36 +58,31 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 1G
         reservations:
-          memory: 4G
-    
+          memory: 512M
+
   airflow_scheduler:
-    build:
-      context: .
-      dockerfile: Dockerfile.airflow
-    image: custom-airflow:latest
+    image: apache/airflow:2.7.3-python3.10
     container_name: airflow-scheduler
     restart: always
     depends_on:
       postgres:
         condition: service_healthy
+    env_file:
+      - .env
     environment:
       - AIRFLOW__CORE__EXECUTOR=LocalExecutor
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
       - AIRFLOW__CORE__FERNET_KEY=${FERNET_KEY:-9nZunqm9OqSCq5uG4xGvTeeYJL9XBVuG_pKjbp-zwmM=}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
-      - DB_HOST=postgres
-      - DB_NAME=jobdata
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_PORT=5432
+      - _PIP_ADDITIONAL_REQUIREMENTS=beautifulsoup4 psycopg2-binary rapidfuzz python-dotenv
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - ./airflow/logs:/opt/airflow/logs
       - ./airflow/plugins:/opt/airflow/plugins
-      - ./scraper:/opt/airflow/scraper
+      - ./src/linkedin_market_analysis/scraper:/opt/airflow/scraper
       - /var/run/docker.sock:/var/run/docker.sock
     command: scheduler
     networks:
@@ -116,22 +90,22 @@ services:
     deploy:
       resources:
         limits:
-          memory: 8G
+          memory: 1G
         reservations:
-          memory: 4G
+          memory: 512M
 
   airflow_init:
-    build:
-      context: .
-      dockerfile: Dockerfile.airflow
-    image: custom-airflow:latest
+    image: apache/airflow:2.7.3-python3.10
     container_name: airflow-init
     depends_on:
       postgres:
         condition: service_healthy
+    env_file:
+      - .env
     environment:
-      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@postgres/airflow
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${DB_NAME}
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - _PIP_ADDITIONAL_REQUIREMENTS=beautifulsoup4 psycopg2-binary rapidfuzz python-dotenv
     command: >
       bash -c "
       airflow db migrate &&
@@ -147,7 +121,7 @@ services:
 
 volumes:
   pgdata:
-  
+
 networks:
   scraper_network:
     driver: bridge
