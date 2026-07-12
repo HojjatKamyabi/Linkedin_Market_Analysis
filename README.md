@@ -142,19 +142,6 @@ The read-only presentation layer displays:
 - Database duplicates are checked before LLM calls
 - Failed batches remain retryable
 
-## Verified demo
-- One successful Airflow DAG run
-- 3 jobs extracted
-- 3 jobs enriched
-- 3 distinct database records
-- 0 duplicate URLs
-- JSON batch archived successfully
-- Streamlit dashboard served successfully
-- Dashboard observed 2 companies and 32 normalized technical skills
-
-## Screenshots
-![Airflow DAG Success](docs/images/airflow-success.png)
-![Streamlit Dashboard](docs/images/dashboard.png)
 
 ## Limitations
 - Public LinkedIn markup may change
