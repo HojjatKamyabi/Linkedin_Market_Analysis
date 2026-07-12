@@ -1,238 +1,280 @@
+import json
 import logging
 import os
 import re
 import shutil
-from datetime import datetime
+import urllib.parse
+from datetime import datetime, date
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
 
 import psycopg2
-from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 from psycopg2.extensions import connection as PgConnection
+from psycopg2.extras import Json
+import sys
+
+from llm_client import extract_job_info
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-RAW_DIR = PROJECT_ROOT / "data" / "raw"
-PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
-load_dotenv(PROJECT_ROOT / ".env")
+RAW_DIR = Path(os.environ.get("RAW_DIR", PROJECT_ROOT / "data" / "raw"))
+PROCESSED_DIR = Path(os.environ.get("PROCESSED_DIR", PROJECT_ROOT / "data" / "processed"))
 
+def get_db_connection() -> PgConnection:
+    host = os.environ.get("DB_HOST", "postgres")
+    port = os.environ.get("DB_PORT", "5432")
+    db_name = os.environ.get("DB_NAME")
+    user = os.environ.get("DB_USER")
+    password = os.environ.get("DB_PASSWORD")
 
-def connect_to_db() -> Optional[PgConnection]:
-    """Connect to PostgreSQL and return the connection if successful."""
+    if not all([db_name, user, password]):
+        raise RuntimeError("Missing required DB configuration (DB_NAME, DB_USER, DB_PASSWORD).")
+
     try:
-        host = os.getenv("DB_HOST")
-        database = os.getenv("DB_NAME")
-        user = os.getenv("DB_USER")
-        password = os.getenv("DB_PASSWORD")
-        port = os.getenv("DB_PORT", "5432")
-
-        if not host or not database or not user or not password:
-            logger.error("Missing required database environment variables.")
-            return None
-
         conn = psycopg2.connect(
             host=host,
-            database=database,
-            user=user,
-            password=password,
             port=port,
+            database=db_name,
+            user=user,
+            password=password
         )
         return conn
-    except psycopg2.OperationalError as exc:
-        logger.error("Connection to postgresql failed: %s", exc)
-        return None
+    except Exception as e:
+        raise RuntimeError(f"Failed to connect to database: {type(e).__name__}")
 
-
-def create_tables(conn: PgConnection) -> None:
-    """Create database tables if they do not exist."""
-    with conn.cursor() as cursor:
-        cursor.execute(
-            """
+def create_table_if_not_exists(conn: PgConnection) -> None:
+    with conn.cursor() as cur:
+        cur.execute("""
             CREATE TABLE IF NOT EXISTS jobs (
                 id SERIAL PRIMARY KEY,
+                linkedin_job_id TEXT,
                 title TEXT NOT NULL,
-                company TEXT NOT NULL,
-                location TEXT NOT NULL,
-                date_posted TEXT,
-                description TEXT,
-                job_link TEXT UNIQUE,
-                scrape_date TIMESTAMP NOT NULL,
+                company TEXT,
+                location TEXT,
+                posting_date DATE,
+                description TEXT NOT NULL,
+                job_link TEXT UNIQUE NOT NULL,
+                scrape_date TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                 skills JSONB,
-                -- Columns reserved for AI-enriched data to keep the pipeline forward-compatible.
                 required_skills JSONB,
                 seniority_level TEXT,
                 llm_model TEXT,
-                llm_extracted_at TIMESTAMP
+                llm_extracted_at TIMESTAMP WITH TIME ZONE
             );
-            """
-        )
-        conn.commit()
-    logger.info("Database tables created/verified")
-
-
-def parse_job_description(description_html: str) -> str:
-    """Normalize the job description HTML into readable text."""
-    soup = BeautifulSoup(description_html, "html.parser")
-
-    for li in soup.find_all("li"):
-        li.insert_before("+ ")
-
-    for br in soup.find_all(["br", "p"]):
-        br.insert_after("\n")
-
-    description = soup.get_text()
-    description = re.sub(r"\n\s*\n", "\n\n", description)
-    return description.strip()
-
-
-def parse_job_card(job_html: str) -> tuple[str, str, str, str, Optional[str]]:
-    """Extract job metadata and link from a job card's HTML."""
-    job_soup = BeautifulSoup(job_html, "html.parser")
-    title_elem = job_soup.select_one(".base-search-card__title")
-    title = title_elem.text.strip() if title_elem else "Not available"
-
-    company_elem = job_soup.select_one(".base-search-card__subtitle")
-    company = company_elem.text.strip() if company_elem else "Not available"
-
-    location_elem = job_soup.select_one(".job-search-card__location")
-    location_name = location_elem.text.strip() if location_elem else "Not available"
-
-    date_elem = job_soup.select_one("time.job-search-card__listdate")
-    date = date_elem.get("datetime") if date_elem else "Not available"
-
-    link_elem = job_soup.select_one("a.base-card__full-link")
-    job_link = link_elem.get("href") if link_elem else None
-
-    return title, company, location_name, date, job_link
-
-
-def insert_job(
-    conn: PgConnection,
-    title: str,
-    company: str,
-    location: str,
-    date_posted: str,
-    description: str,
-    job_link: str,
-) -> None:
-    """Insert a job record into the database if it does not already exist."""
-    with conn.cursor() as cursor:
-        cursor.execute(
-            """
-            INSERT INTO jobs (
-                title,
-                company,
-                location,
-                date_posted,
-                description,
-                job_link,
-                scrape_date,
-                required_skills,
-                seniority_level,
-                llm_model,
-                llm_extracted_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (job_link) DO NOTHING
-            RETURNING id
-            """,
-            (
-                title,
-                company,
-                location,
-                date_posted,
-                description,
-                job_link,
-                datetime.now(),
-                # Default AI-enriched fields to NULL until extraction is implemented.
-                None,
-                None,
-                None,
-                None,
-            ),
-        )
+        """)
         conn.commit()
 
+def normalize_whitespace(text: Optional[str]) -> Optional[str]:
+    if not isinstance(text, str):
+        return None
+    cleaned = re.sub(r'\s+', ' ', text).strip()
+    return cleaned if cleaned else None
 
-def ensure_processed_dir(processed_dir: Path) -> None:
-    """Create the processed data directory if it does not exist."""
-    processed_dir.mkdir(parents=True, exist_ok=True)
+def parse_date(date_str: Any) -> Optional[date]:
+    if not isinstance(date_str, str):
+        return None
+    try:
+        dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+        return dt.date()
+    except ValueError:
+        logger.warning("Malformed date: %s", date_str)
+        return None
 
+def process_job(conn: PgConnection, job: dict) -> str:
+    """Returns state: 'inserted', 'duplicate', 'invalid', 'llm_failure', 'db_failure', 'error'"""
+    try:
+        job_id = str(job.get('linkedin_job_id', '')).strip()
+        title = normalize_whitespace(job.get('title'))
+        job_link = str(job.get('job_link', '')).strip()
+        description = job.get('description', '')
 
-def load_raw_pairs(raw_dir: Path) -> list[tuple[Path, Path]]:
-    """Collect matching job card and description HTML file pairs."""
-    card_files = sorted(raw_dir.glob("*_card.html"))
-    pairs: list[tuple[Path, Path]] = []
+        if not job_id or not job_id.isdigit() or not title or not job_link or not isinstance(description, str) or not description.strip():
+            logger.warning("Invalid job record: missing or malformed required fields.")
+            return 'invalid'
 
-    for card_path in card_files:
-        base_name = card_path.name.replace("_card.html", "")
-        desc_path = raw_dir / f"{base_name}_description.html"
-        if desc_path.exists():
-            pairs.append((card_path, desc_path))
-        else:
-            logger.warning("Missing description file for %s", card_path.name)
+        parsed = urllib.parse.urlparse(job_link)
+        if parsed.scheme != 'https' or parsed.netloc not in ['linkedin.com', 'www.linkedin.com']:
+            logger.warning("Invalid job URL host or scheme for job %s", job_id)
+            return 'invalid'
+        
+        if not parsed.path.startswith('/jobs/view/'):
+            logger.warning("Invalid job URL path for job %s", job_id)
+            return 'invalid'
+            
+        id_match = re.search(r'-(\d+)(?:/|$)', parsed.path)
+        if not id_match or id_match.group(1) != job_id:
+            logger.warning("URL job ID mismatch for job %s", job_id)
+            return 'invalid'
+            
+        clean_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+        
+        company = normalize_whitespace(job.get('company'))
+        location = normalize_whitespace(job.get('location'))
+        posting_date = parse_date(job.get('posting_date'))
+        
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM jobs WHERE job_link = %s LIMIT 1", (clean_url,))
+            if cur.fetchone():
+                return 'duplicate'
+                
+        llm_result = extract_job_info(description)
+        if llm_result is None:
+            logger.warning("LLM extraction failed for job %s", job_id)
+            return 'llm_failure'
+            
+        req_skills_raw = llm_result.get('required_skills')
+        seniority = llm_result.get('seniority_level')
+        
+        if not isinstance(req_skills_raw, list) or not isinstance(seniority, str) or not seniority.strip():
+            logger.warning("LLM validation failed for job %s: invalid types", job_id)
+            return 'llm_failure'
+            
+        for s in req_skills_raw:
+            if not isinstance(s, str) or not s.strip():
+                logger.warning("LLM validation failed for job %s: invalid skill string", job_id)
+                return 'llm_failure'
+                
+        req_skills = [s.strip() for s in req_skills_raw]
+        llm_model = os.environ.get("LLM_MODEL", "openrouter/free")
+        
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO jobs (
+                    linkedin_job_id, title, company, location, posting_date,
+                    description, job_link, scrape_date, required_skills,
+                    seniority_level, llm_model, llm_extracted_at
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s, %s, %s, CURRENT_TIMESTAMP
+                ) ON CONFLICT (job_link) DO NOTHING
+            """, (
+                job_id, title, company, location, posting_date,
+                description, clean_url, Json(req_skills), seniority, llm_model
+            ))
+            
+            if cur.rowcount > 0:
+                conn.commit()
+                return 'inserted'
+            else:
+                conn.commit()
+                return 'duplicate'
+                
+    except psycopg2.Error as e:
+        conn.rollback()
+        logger.error("Database error for job %s: %s", job.get('linkedin_job_id', 'unknown'), type(e).__name__)
+        return 'db_failure'
+    except Exception as e:
+        logger.error("Unexpected error processing job: %s", type(e).__name__)
+        return 'error'
 
-    return pairs
+def process_batch(conn: PgConnection, filepath: Path) -> dict:
+    stats = {
+        'total': 0, 'inserted': 0, 'duplicate': 0, 'invalid': 0,
+        'llm_failure': 0, 'db_failure': 0, 'error': 0, 'archived': False
+    }
+    
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            
+        if not isinstance(data, dict) or not isinstance(data.get('jobs'), list):
+            logger.error("Malformed batch file: %s", filepath.name)
+            return stats
+            
+        jobs = data['jobs']
+        stats['total'] = len(jobs)
+        
+        if not jobs:
+            logger.error("Empty jobs array in batch file: %s", filepath.name)
+            return stats
+        
+        terminal_states = {'inserted', 'duplicate', 'invalid'}
+        all_terminal = True
+        
+        for job in jobs:
+            state = process_job(conn, job)
+            stats[state] += 1
+            if state not in terminal_states:
+                all_terminal = False
+                
+        if all_terminal:
+            PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+            dest = PROCESSED_DIR / filepath.name
+            if dest.exists():
+                logger.error("Archive destination already exists for %s", filepath.name)
+            else:
+                shutil.move(str(filepath), dest)
+                stats['archived'] = True
+                logger.info("Archived %s", filepath.name)
+                
+    except json.JSONDecodeError:
+        logger.error("Failed to parse JSON in %s", filepath.name)
+    except Exception as e:
+        logger.error("Unexpected error processing batch %s: %s", filepath.name, type(e).__name__)
+        
+    return stats
 
-
-def read_html(path: Path) -> str:
-    """Read HTML from disk."""
-    return path.read_text(encoding="utf-8", errors="ignore")
-
-
-def process_pair(conn: PgConnection, card_path: Path, desc_path: Path) -> bool:
-    """Parse, insert, and return whether the job was successfully loaded."""
-    job_html = read_html(card_path)
-    description_html = read_html(desc_path)
-    title, company, location, date_posted, job_link = parse_job_card(job_html)
-
-    if not job_link:
-        logger.warning("Skipping %s: missing job link", card_path.name)
+def run_parser() -> bool:
+    try:
+        conn = get_db_connection()
+    except RuntimeError as e:
+        logger.error("Database connection error: %s", e)
         return False
-
-    description = parse_job_description(description_html)
-    insert_job(conn, title, company, location, date_posted, description, job_link)
-    logger.info("Inserted job from %s", card_path.name)
-    return True
-
-
-def archive_files(processed_dir: Path, card_path: Path, desc_path: Path) -> None:
-    """Move processed files to the processed directory."""
-    ensure_processed_dir(processed_dir)
-    shutil.move(str(card_path), processed_dir / card_path.name)
-    shutil.move(str(desc_path), processed_dir / desc_path.name)
-
-
-def run_parser(raw_dir: Path, processed_dir: Path) -> None:
-    """Parse raw HTML files and load them into PostgreSQL."""
-    conn = connect_to_db()
-    if conn is None:
-        logger.error("Exiting: Could not connect to the database.")
-        return
-
-    create_tables(conn)
-
-    pairs = load_raw_pairs(raw_dir)
-    logger.info("Found %s raw job pairs", len(pairs))
-
-    for card_path, desc_path in pairs:
+        
+    try:
         try:
-            if process_pair(conn, card_path, desc_path):
-                archive_files(processed_dir, card_path, desc_path)
-        except Exception:
-            logger.exception("Error processing %s", card_path.name)
-
-    conn.close()
-    logger.info("Parsing completed")
-
+            create_table_if_not_exists(conn)
+        except Exception as e:
+            logger.error("Table creation failed: %s", e)
+            return False
+            
+        raw_files = sorted(RAW_DIR.glob("*_jobs.json"))
+        if not raw_files:
+            logger.info("No matching *_jobs.json files found in %s", RAW_DIR)
+            return True
+            
+        total_stats = {
+            'total': 0, 'inserted': 0, 'duplicate': 0, 'invalid': 0,
+            'llm_failure': 0, 'db_failure': 0, 'error': 0, 'archived_batches': 0
+        }
+        
+        all_batches_successful = True
+        
+        for filepath in raw_files:
+            logger.info("Processing batch %s", filepath.name)
+            stats = process_batch(conn, filepath)
+            
+            logger.info("Batch %s results: %d total, %d inserted, %d duplicate, %d invalid, %d LLM fail, %d DB fail, %d error, archived=%s",
+                filepath.name, stats['total'], stats['inserted'], stats['duplicate'], stats['invalid'],
+                stats['llm_failure'], stats['db_failure'], stats['error'], stats['archived'])
+                
+            if not stats.get('archived'):
+                all_batches_successful = False
+                
+            for k in stats:
+                if k == 'archived':
+                    if stats[k]: total_stats['archived_batches'] += 1
+                else:
+                    total_stats[k] += stats[k]
+                    
+        logger.info("Run summary: %d total jobs, %d inserted, %d duplicate, %d invalid, %d LLM fail, %d DB fail, %d error, %d batches archived",
+            total_stats['total'], total_stats['inserted'], total_stats['duplicate'], total_stats['invalid'],
+            total_stats['llm_failure'], total_stats['db_failure'], total_stats['error'], total_stats['archived_batches'])
+            
+        return all_batches_successful
+            
+    finally:
+        conn.close()
 
 def main() -> None:
-    """Entry point for parsing raw files into the database."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    run_parser(RAW_DIR, PROCESSED_DIR)
-
+    success = run_parser()
+    if success:
+        logger.info("Parser completed successfully")
+        sys.exit(0)
+    else:
+        logger.error("Parser completed with incomplete batches")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
