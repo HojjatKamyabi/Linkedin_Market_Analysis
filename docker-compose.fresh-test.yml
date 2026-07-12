@@ -1,0 +1,207 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: linkedin-fresh-postgres
+    env_file:
+      - .fresh-test/.env
+    environment:
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${DB_NAME}
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/init-databases.sh:/docker-entrypoint-initdb.d/10-init-databases.sh:ro
+    networks:
+      - scraper_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  airflow_permissions:
+    image: alpine
+    container_name: linkedin-fresh-airflow-permissions
+    user: root
+    volumes:
+      - ./.fresh-test/data:/data
+      - ./.fresh-test/airflow/logs:/logs
+    command: >
+      sh -c "
+      mkdir -p /data/raw /data/processed /logs &&
+      chown 50000:0 /data /data/raw /data/processed /logs &&
+      chmod 775 /data /data/raw /data/processed /logs
+      "
+    networks:
+      - scraper_network
+
+  airflow_webserver:
+    image: linkedin-market-airflow:local
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: linkedin-fresh-airflow-webserver
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow_init:
+        condition: service_completed_successfully
+    env_file:
+      - .fresh-test/.env
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD_URI}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME}
+      - AIRFLOW__CORE__FERNET_KEY=${FERNET_KEY:?FERNET_KEY is required}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - RAW_DIR=/opt/airflow/data/raw
+      - PROCESSED_DIR=/opt/airflow/data/processed
+      - LINKEDIN_JOB_TITLE=${LINKEDIN_JOB_TITLE:-Data Engineer}
+      - MAX_JOBS_TO_EXTRACT=${MAX_JOBS_TO_EXTRACT:-3}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b:free}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./.fresh-test/airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins:ro
+      - ./src/linkedin_market_analysis/scraper:/opt/airflow/scraper:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.fresh-test/data:/opt/airflow/data
+    ports:
+      - "8881:8080"
+    command: webserver
+    healthcheck:
+      test: ["CMD-SHELL", "[ -f /opt/airflow/airflow-webserver.pid ]"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+    networks:
+      - scraper_network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  airflow_scheduler:
+    image: linkedin-market-airflow:local
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: linkedin-fresh-airflow-scheduler
+    restart: always
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow_init:
+        condition: service_completed_successfully
+    env_file:
+      - .fresh-test/.env
+    environment:
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_PORT=${DB_PORT:-5432}
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD_URI}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME}
+      - AIRFLOW__CORE__FERNET_KEY=${FERNET_KEY:?FERNET_KEY is required}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__DAGS_FOLDER=/opt/airflow/dags
+      - RAW_DIR=/opt/airflow/data/raw
+      - PROCESSED_DIR=/opt/airflow/data/processed
+      - LINKEDIN_JOB_TITLE=${LINKEDIN_JOB_TITLE:-Data Engineer}
+      - MAX_JOBS_TO_EXTRACT=${MAX_JOBS_TO_EXTRACT:-3}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://openrouter.ai/api/v1}
+      - LLM_MODEL=${LLM_MODEL:-openai/gpt-oss-20b:free}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./.fresh-test/airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins:ro
+      - ./src/linkedin_market_analysis/scraper:/opt/airflow/scraper:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.fresh-test/data:/opt/airflow/data
+    command: scheduler
+    networks:
+      - scraper_network
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+
+  airflow_init:
+    image: linkedin-market-airflow:local
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: linkedin-fresh-airflow-init
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow_permissions:
+        condition: service_completed_successfully
+    env_file:
+      - .fresh-test/.env
+    environment:
+      - AIRFLOW__CORE__FERNET_KEY=${FERNET_KEY:?FERNET_KEY is required}
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD_URI}@${DB_HOST:-postgres}:${DB_PORT:-5432}/${DB_NAME}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW_ADMIN_USERNAME=${AIRFLOW_ADMIN_USERNAME:-admin}
+      - AIRFLOW_ADMIN_PASSWORD=${AIRFLOW_ADMIN_PASSWORD}
+      - AIRFLOW_ADMIN_FIRSTNAME=${AIRFLOW_ADMIN_FIRSTNAME:-Airflow}
+      - AIRFLOW_ADMIN_LASTNAME=${AIRFLOW_ADMIN_LASTNAME:-Admin}
+      - AIRFLOW_ADMIN_EMAIL=${AIRFLOW_ADMIN_EMAIL:-admin@example.com}
+    command: >
+      bash -c "
+      if [ -z \"$${AIRFLOW_ADMIN_PASSWORD}\" ]; then echo 'AIRFLOW_ADMIN_PASSWORD is required'; exit 1; fi &&
+      airflow db migrate &&
+      (
+        airflow users create --username \"$${AIRFLOW_ADMIN_USERNAME}\" --password \"$${AIRFLOW_ADMIN_PASSWORD}\" --firstname \"$${AIRFLOW_ADMIN_FIRSTNAME}\" --lastname \"$${AIRFLOW_ADMIN_LASTNAME}\" --role Admin --email \"$${AIRFLOW_ADMIN_EMAIL}\" ||
+        airflow users list | grep -q \"$${AIRFLOW_ADMIN_USERNAME}\"
+      )
+      "
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./.fresh-test/airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./.fresh-test/data:/opt/airflow/data
+    networks:
+      - scraper_network
+
+  dashboard:
+    container_name: linkedin-fresh-dashboard
+    image: python:3.10-slim
+    working_dir: /app
+    volumes:
+      - .:/app:ro
+    networks:
+      - scraper_network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "8502:8501"
+    restart: unless-stopped
+    environment:
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_HOST=postgres
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=linkedin_market
+    command: >
+      bash -c "pip install -r visualization/requirements.txt && streamlit run visualization/app.py --server.address=0.0.0.0 --server.port=8501 --server.headless=true"
+
+volumes:
+  pgdata:
+
+networks:
+  scraper_network:
+    driver: bridge

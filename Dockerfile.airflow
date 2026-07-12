@@ -1,4 +1,4 @@
-FROM apache/airflow
+FROM apache/airflow:2.7.3-python3.10
 
 USER root
 
@@ -42,10 +42,22 @@ RUN apt-get update && \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # Python dependencies
-COPY /scraper/requirements.txt ./scraper/requirements.txt
+COPY scraper/requirements.txt ./scraper/requirements.txt
+
+USER airflow
 RUN pip install --no-cache-dir -r ./scraper/requirements.txt
 
+USER root
+RUN PYTHONPATH=/home/airflow/.local/lib/python3.10/site-packages \
+    python -m playwright install-deps chromium \
+    && mkdir -p /ms-playwright \
+    && chown -R airflow:root /ms-playwright
+
+USER airflow
+RUN python -m playwright install chromium
 
 COPY ./scraper /opt/airflow/scraper
 WORKDIR /opt/airflow/scraper
