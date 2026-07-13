@@ -17,30 +17,56 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 
 def get_config():
-    """Load configuration from environment variables."""
-    job_title = os.environ.get("LINKEDIN_JOB_TITLE", "Data Engineer")
-    
+    job_title = os.environ.get(
+        "LINKEDIN_JOB_TITLE",
+        "Data Engineer",
+    ).strip()
+
+    location = os.environ.get(
+        "LINKEDIN_LOCATION",
+        "Germany",
+    ).strip()
+
     try:
-        max_jobs = int(os.environ.get("MAX_JOBS_TO_EXTRACT", "15"))
-        if max_jobs <= 0:
-            logger.warning("MAX_JOBS_TO_EXTRACT must be positive. Falling back to 15.")
-            max_jobs = 15
-    except ValueError:
-        logger.warning("Invalid MAX_JOBS_TO_EXTRACT. Falling back to 15.")
-        max_jobs = 15
+        max_jobs = int(
+            os.environ.get("MAX_JOBS_TO_EXTRACT", "3")
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "MAX_JOBS_TO_EXTRACT must be an integer"
+        ) from exc
 
-    raw_dir_env = os.environ.get("RAW_DIR")
-    if raw_dir_env:
-        raw_dir = Path(raw_dir_env)
-    else:
-        raw_dir = PROJECT_ROOT / "data" / "raw"
+    if not job_title:
+        raise RuntimeError("LINKEDIN_JOB_TITLE is required")
 
-    return job_title, max_jobs, raw_dir
+    if not location:
+        raise RuntimeError("LINKEDIN_LOCATION is required")
+
+    if max_jobs < 1:
+        raise RuntimeError(
+            "MAX_JOBS_TO_EXTRACT must be greater than zero"
+        )
+
+    raw_dir = Path(
+        os.environ.get(
+            "RAW_DIR",
+            PROJECT_ROOT / "data" / "raw",
+        )
+    )
+
+    return job_title, location, max_jobs, raw_dir
 
 
-def build_search_url(job_title: str) -> str:
-    """Build the LinkedIn jobs search URL for a job title."""
-    return "https://www.linkedin.com/jobs/search/?keywords=" + urllib.parse.quote(job_title)
+
+def build_search_url(job_title: str, location: str) -> str:
+    query = urllib.parse.urlencode(
+        {
+            "keywords": job_title,
+            "location": location,
+        }
+    )
+
+    return f"https://www.linkedin.com/jobs/search/?{query}"
 
 
 def normalize_whitespace(text: str) -> str:
@@ -50,22 +76,51 @@ def normalize_whitespace(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def is_linkedin_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+        
+    normalized_host = hostname.lower().rstrip(".")
+    
+    return (
+        normalized_host == "linkedin.com"
+        or normalized_host.endswith(".linkedin.com")
+    )
+
+
 def parse_clean_url(raw_url: str) -> tuple[str, str]:
     """Return a clean URL and the stable job ID if valid, else empty strings."""
     if not raw_url:
         return "", ""
         
-    parsed = urllib.parse.urlparse(raw_url)
-    if parsed.scheme != "https" or parsed.netloc not in ("www.linkedin.com", "linkedin.com"):
+    absolute_url = urllib.parse.urljoin(
+        "https://www.linkedin.com",
+        raw_url,
+    )
+    
+    parsed = urllib.parse.urlparse(absolute_url)
+    if parsed.scheme != "https" or not is_linkedin_host(parsed.hostname):
         return "", ""
         
     if not parsed.path.startswith("/jobs/view/"):
         return "", ""
         
-    clean_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+    job_id_match = re.search(r'/jobs/view/(?:.*-)?(\d+)(?:/|$)', parsed.path)
+    if not job_id_match:
+        return "", ""
+        
+    job_id = job_id_match.group(1)
     
-    job_id_match = re.search(r'-(\d+)(?:/|$)', parsed.path)
-    job_id = job_id_match.group(1) if job_id_match else ""
+    clean_url = urllib.parse.urlunparse(
+        (
+            "https",
+            "www.linkedin.com",
+            parsed.path,
+            "",
+            "",
+            "",
+        )
+    )
     
     return clean_url, job_id
 
@@ -86,8 +141,8 @@ def write_atomic_json(data: dict, filepath: Path) -> None:
 
 def run_extractor() -> int:
     """Fetch job records from LinkedIn and save to an atomic JSON file."""
-    job_title, max_jobs, raw_dir = get_config()
-    search_url = build_search_url(job_title)
+    job_title, location, max_jobs, raw_dir = get_config()
+    search_url = build_search_url(job_title, location)
     
     timestamp = datetime.now(timezone.utc)
     timestamp_str = timestamp.strftime("%Y%m%dT%H%M%SZ")
@@ -121,7 +176,12 @@ def run_extractor() -> int:
         "jobs": []
     }
     
-    logger.info("Starting extraction for '%s' (max %d jobs)", job_title, max_jobs)
+    logger.info(
+        "Starting extraction for %r in %s (max %d jobs)",
+        job_title,
+        location,
+        max_jobs,
+    )
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True)

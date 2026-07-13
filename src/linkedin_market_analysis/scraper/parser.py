@@ -81,6 +81,17 @@ def parse_date(date_str: Any) -> Optional[date]:
         logger.warning("Malformed date: %s", date_str)
         return None
 
+def is_linkedin_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+        
+    normalized_host = hostname.lower().rstrip(".")
+    
+    return (
+        normalized_host == "linkedin.com"
+        or normalized_host.endswith(".linkedin.com")
+    )
+
 def process_job(conn: PgConnection, job: dict) -> str:
     """Returns state: 'inserted', 'duplicate', 'invalid', 'llm_failure', 'db_failure', 'error'"""
     try:
@@ -93,8 +104,9 @@ def process_job(conn: PgConnection, job: dict) -> str:
             logger.warning("Invalid job record: missing or malformed required fields.")
             return 'invalid'
 
-        parsed = urllib.parse.urlparse(job_link)
-        if parsed.scheme != 'https' or parsed.netloc not in ['linkedin.com', 'www.linkedin.com']:
+        absolute_url = urllib.parse.urljoin("https://www.linkedin.com", job_link)
+        parsed = urllib.parse.urlparse(absolute_url)
+        if parsed.scheme != 'https' or not is_linkedin_host(parsed.hostname):
             logger.warning("Invalid job URL host or scheme for job %s", job_id)
             return 'invalid'
         
@@ -102,12 +114,21 @@ def process_job(conn: PgConnection, job: dict) -> str:
             logger.warning("Invalid job URL path for job %s", job_id)
             return 'invalid'
             
-        id_match = re.search(r'-(\d+)(?:/|$)', parsed.path)
+        id_match = re.search(r'/jobs/view/(?:.*-)?(\d+)(?:/|$)', parsed.path)
         if not id_match or id_match.group(1) != job_id:
             logger.warning("URL job ID mismatch for job %s", job_id)
             return 'invalid'
             
-        clean_url = urllib.parse.urlunparse((parsed.scheme, parsed.netloc, parsed.path, '', '', ''))
+        clean_url = urllib.parse.urlunparse(
+            (
+                "https",
+                "www.linkedin.com",
+                parsed.path,
+                "",
+                "",
+                "",
+            )
+        )
         
         company = normalize_whitespace(job.get('company'))
         location = normalize_whitespace(job.get('location'))

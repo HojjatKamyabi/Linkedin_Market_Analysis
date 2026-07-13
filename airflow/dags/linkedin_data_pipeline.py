@@ -32,7 +32,7 @@ with DAG(
         env={
             'DB_HOST': 'postgres',
             'DB_PORT': os.environ.get('DB_PORT', '5432'),
-            'DB_NAME': 'linkedin_market',
+            'DB_NAME': 'linkedin_germany',
             'RAW_DIR': '/opt/airflow/data/raw',
             'PROCESSED_DIR': '/opt/airflow/data/processed',
             'LLM_BASE_URL': os.environ.get('LLM_BASE_URL', 'https://openrouter.ai/api/v1'),
