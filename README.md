@@ -50,7 +50,6 @@ flowchart LR
 - PostgreSQL
 - Docker Compose
 - Streamlit
-- Plotly
 - Pandas
 
 ## Project structure
